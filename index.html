@@ -1570,7 +1570,10 @@
       const FAV_STORAGE_KEY = 'jamsune_unified_favs_v2';
       const READ_STORAGE_KEY = 'jamsune_unified_reads_v2';
       const GAS_STORAGE_KEY = 'jamsune_gas_sync_v1';
-      const DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycbyp42zkwTapypdizGitEpV6E3pTxjIp-Mds4_3EyN42y3w_LKZp9oRTU0xAz8KVYnvV/exec';
+      const DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycbxdsBk9ExdZRjF58j3p5LRkM8Lh3XMCOXwl2RMWafNtvF5tlgD26VUzML2lsfzyrb45/exec';
+      const LEGACY_GAS_URLS = new Set([
+        'https://script.google.com/macros/s/AKfycbyp42zkwTapypdizGitEpV6E3pTxjIp-Mds4_3EyN42y3w_LKZp9oRTU0xAz8KVYnvV/exec'
+      ]);
 
       const LOVE_PARTICLES = ['💕', '💖', '✨', '❤️', '💛', '🌸'];
       const LOVE_MESSAGES = [
@@ -1701,7 +1704,9 @@
             const parsed = JSON.parse(raw);
             if (parsed && typeof parsed.url === 'string') {
               if (parsed.disconnected) return { url: '', pin: '' };
-              return { url: parsed.url.trim() || DEFAULT_GAS_URL, pin: String(parsed.pin || '') };
+              const savedUrl = parsed.url.trim();
+              const effectiveUrl = (!savedUrl || LEGACY_GAS_URLS.has(savedUrl)) ? DEFAULT_GAS_URL : savedUrl;
+              return { url: effectiveUrl, pin: String(parsed.pin || '') };
             }
           }
         } catch {}
