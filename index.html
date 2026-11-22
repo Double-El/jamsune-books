@@ -1497,7 +1497,7 @@
       <div class="dialog-section">
         <h3>Apps Script 웹 앱 연결 설정</h3>
         <p class="hint" style="margin: 0 0 0.7rem;">
-          연결해 두면 웹에서 승호·슬지 횟수를 바꿀 때 Google 스프레드시트(또는 CSV)가 자동 업데이트되고, Google 스프레드시트에서 <code>승호</code>·<code>슬지</code>·<code>보유여부</code>를 직접 수정해도 웹을 새로고침하면 자동 반영됩니다.
+          연결해 두면 웹에서 승호·슬지 횟수를 바꿀 때 Google 스프레드시트가 자동 업데이트되고, 스프레드시트에서 <code>승호</code>·<code>슬지</code>·<code>보유여부</code>를 수정하거나 <strong>새 도서 행을 추가</strong>(<code>detail_url</code> 비움)해도 웹에 자동 반영됩니다.
         </p>
         <div class="field" style="margin-block-end: 0.65rem;">
           <label for="gas-url-input">Google Apps Script 웹 앱 URL</label>
@@ -1777,22 +1777,63 @@
         }
       }
 
-      function applyOwnedMapFromDrive(ownedMap) {
-        let ownedTotal = 0;
+      function rebuildCatalogIndexes(books) {
+        const byId = new Map();
+        const pubCounts = new Map();
+        const catCounts = new Array(CATEGORIES.length).fill(0);
+        const engLvlCounts = new Array(LEVELS.length).fill(0);
         let korTotal = 0;
         let engTotal = 0;
-        const books = state.books;
+        let ownedTotal = 0;
+
         for (let i = 0; i < books.length; i++) {
           const b = books[i];
-          const ow = ownedMap[b.id] || '';
-          b.owned = ow;
-          b.ownedRank = ow ? (ow === '보유' ? 2 : 1) : 0;
-          if (ow) ownedTotal++;
+          byId.set(b.id, b);
           if (b.typeIdx === 0) korTotal++;
-          else engTotal++;
+          else {
+            engTotal++;
+            if (b.lvlIdx >= ENG_LEVEL_START && b.lvlIdx < engLvlCounts.length) engLvlCounts[b.lvlIdx]++;
+          }
+          if (b.catIdx >= 0 && b.catIdx < catCounts.length) catCounts[b.catIdx]++;
+          if (b.owned) ownedTotal++;
+          if (b.publisher) pubCounts.set(b.publisher, (pubCounts.get(b.publisher) || 0) + 1);
         }
+
+        state.books = books;
+        state.bookById = byId;
+
+        els.cntAll.textContent = books.length.toLocaleString('ko-KR');
+        els.cntKor.textContent = korTotal.toLocaleString('ko-KR');
+        els.cntEng.textContent = engTotal.toLocaleString('ko-KR');
         els.statOwned.textContent = ownedTotal.toLocaleString('ko-KR');
         els.subtitle.textContent = `총 ${books.length.toLocaleString('ko-KR')}권 (한글책 ${korTotal.toLocaleString('ko-KR')} · 영어책 ${engTotal.toLocaleString('ko-KR')}) · 보유 ${ownedTotal.toLocaleString('ko-KR')}건`;
+
+        renderFilterChips(catCounts, engLvlCounts);
+        renderPublisherDatalist(pubCounts);
+      }
+
+      function applyDriveCatalogUpdates(data) {
+        let books = state.baseBooks ? state.baseBooks.slice() : state.books.slice();
+        if (Array.isArray(data.addedBooks) && data.addedBooks.length > 0) {
+          const seen = new Set(books.map(b => b.id));
+          for (let i = 0; i < data.addedBooks.length; i++) {
+            const rec = createBookRecord(data.addedBooks[i]);
+            if (rec.title && !seen.has(rec.id)) {
+              seen.add(rec.id);
+              books.push(rec);
+            }
+          }
+        }
+        if (data.hasOwned && data.owned && typeof data.owned === 'object') {
+          const ownedMap = data.owned;
+          for (let i = 0; i < books.length; i++) {
+            const b = books[i];
+            const ow = ownedMap[b.id] || '';
+            b.owned = ow;
+            b.ownedRank = ow ? (ow === '보유' ? 2 : 1) : 0;
+          }
+        }
+        rebuildCatalogIndexes(books);
       }
 
       async function pullFromDrive(refreshCsv = false) {
@@ -1812,14 +1853,16 @@
             state.reads = data.reads;
             saveReads();
           }
-          if (data.hasOwned && data.owned && typeof data.owned === 'object') {
-            applyOwnedMapFromDrive(data.owned);
+          if (data.hasOwned || Array.isArray(data.addedBooks)) {
+            applyDriveCatalogUpdates(data);
           }
           updateKidsStats();
           applyFiltersAndRender(false);
           const t = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
           const label = data.sourceKind === 'sheet' ? '스프레드시트' : 'Drive';
-          setSyncBadge('ok', `✅ ${label} 동기화 완료 (${t})`);
+          const addedCnt = Array.isArray(data.addedBooks) ? data.addedBooks.length : 0;
+          const addedTxt = addedCnt > 0 ? ` · 추가도서 ${addedCnt}권` : '';
+          setSyncBadge('ok', `✅ ${label} 동기화 완료${addedTxt} (${t})`);
           return true;
         } catch (err) {
           setSyncBadge('err', `⚠️ Drive 동기화 오류: ${err.message}`);
@@ -1917,100 +1960,74 @@
         return btPk ? `${typeIdx}:${catIdx}:${btPk}` : `${typeIdx}:${catIdx}:${title}|${author}`;
       }
 
-      function hydrateBooks(rawList, sourceLabel) {
-        const books = new Array(rawList.length);
-        const byId = new Map();
-        const pubCounts = new Map();
-        const catCounts = new Array(CATEGORIES.length).fill(0);
-        const engLvlCounts = new Array(LEVELS.length).fill(0);
-        let korTotal = 0;
-        let engTotal = 0;
-        let ownedTotal = 0;
+      function createBookRecord(item) {
+        // Format: [typeIdx, catIdx, lvlIdx, title, author, publisher, review, owned, btPk, fc, branchIdx, baseSh?, baseSj?, explicitUrl?]
+        const typeIdx = item[0] ? 1 : 0;
+        const catIdx = item[1] || 0;
+        const lvlIdx = item[2] || 0;
+        const title = item[3] || '';
+        const author = item[4] || '';
+        const publisher = item[5] || '';
+        const review = Number(item[6]) || 0;
+        const owned = item[7] || '';
+        const btPk = item[8] || '';
+        const fc = item[9] || '';
+        const branchIdx = item[10] ?? (typeIdx === 0 ? 0 : 1);
+        const baseSh = Number(item[11]) || 0;
+        const baseSj = Number(item[12]) || 0;
+        const explicitUrl = item[13] || '';
 
-        for (let i = 0; i < rawList.length; i++) {
-          const item = rawList[i];
-          // Format: [typeIdx, catIdx, lvlIdx, title, author, publisher, review, owned, btPk, fc, branchIdx, baseSh?, baseSj?, explicitUrl?]
-          const typeIdx = item[0] ? 1 : 0;
-          const catIdx = item[1] || 0;
-          const lvlIdx = item[2] || 0;
-          const title = item[3] || '';
-          const author = item[4] || '';
-          const publisher = item[5] || '';
-          const review = Number(item[6]) || 0;
-          const owned = item[7] || '';
-          const btPk = item[8] || '';
-          const fc = item[9] || '';
-          const branchIdx = item[10] ?? (typeIdx === 0 ? 0 : 1);
-          const baseSh = Number(item[11]) || 0;
-          const baseSj = Number(item[12]) || 0;
-          const explicitUrl = item[13] || '';
-
-          const catMeta = CATEGORIES[catIdx] || CATEGORIES[0];
-          const level = LEVELS[lvlIdx] || '';
-          const branch = BRANCHES[branchIdx] || 'k';
-          let detailUrl = explicitUrl;
-          if (!detailUrl && btPk) {
-            if (typeIdx === 0) {
-              detailUrl = `https://www.jamsune.com/BookTree/view.html?searchJLevel=${catIdx + 4}&branch=k&btPk=${encodeURIComponent(btPk)}${fc ? '&fc=' + encodeURIComponent(fc) : ''}`;
-            } else {
-              detailUrl = `https://www.jamsune.com/BookTree/view.html?branch=${branch}&btPk=${encodeURIComponent(btPk)}${fc ? '&fc=' + encodeURIComponent(fc) : ''}`;
-            }
+        const catMeta = CATEGORIES[catIdx] || CATEGORIES[0];
+        const level = LEVELS[lvlIdx] || '';
+        const branch = BRANCHES[branchIdx] || 'k';
+        let detailUrl = explicitUrl;
+        if (!detailUrl && btPk) {
+          if (typeIdx === 0) {
+            detailUrl = `https://www.jamsune.com/BookTree/view.html?searchJLevel=${catIdx + 4}&branch=k&btPk=${encodeURIComponent(btPk)}${fc ? '&fc=' + encodeURIComponent(fc) : ''}`;
+          } else {
+            detailUrl = `https://www.jamsune.com/BookTree/view.html?branch=${branch}&btPk=${encodeURIComponent(btPk)}${fc ? '&fc=' + encodeURIComponent(fc) : ''}`;
           }
-
-          const id = makeBookId(typeIdx, catIdx, title, author, btPk);
-          const titleLower = title.toLowerCase();
-          const authorLower = author.toLowerCase();
-          const pubLower = publisher.toLowerCase();
-
-          const b = {
-            id,
-            typeIdx,
-            bookType: typeIdx === 0 ? '한글책' : '영어책',
-            catIdx,
-            category: catMeta.name,
-            lvlIdx,
-            level,
-            title,
-            author,
-            publisher,
-            review,
-            owned,
-            ownedRank: owned ? (owned === '보유' ? 2 : 1) : 0,
-            baseSh,
-            baseSj,
-            detailUrl,
-            tL: titleLower,
-            aL: authorLower,
-            pL: pubLower,
-            allL: `${titleLower} ${authorLower} ${pubLower}`,
-            tC: typeIdx === 0 ? toChoseong(title) : titleLower,
-            aC: typeIdx === 0 ? toChoseong(author) : authorLower,
-            pC: typeIdx === 0 ? toChoseong(publisher) : pubLower
-          };
-          books[i] = b;
-          byId.set(id, b);
-
-          if (typeIdx === 0) korTotal++;
-          else {
-            engTotal++;
-            if (lvlIdx >= ENG_LEVEL_START && lvlIdx < engLvlCounts.length) engLvlCounts[lvlIdx]++;
-          }
-          if (catIdx >= 0 && catIdx < catCounts.length) catCounts[catIdx]++;
-          if (owned) ownedTotal++;
-          if (publisher) pubCounts.set(publisher, (pubCounts.get(publisher) || 0) + 1);
         }
 
-        state.books = books;
-        state.bookById = byId;
+        const id = makeBookId(typeIdx, catIdx, title, author, btPk);
+        const titleLower = title.toLowerCase();
+        const authorLower = author.toLowerCase();
+        const pubLower = publisher.toLowerCase();
 
-        els.cntAll.textContent = books.length.toLocaleString('ko-KR');
-        els.cntKor.textContent = korTotal.toLocaleString('ko-KR');
-        els.cntEng.textContent = engTotal.toLocaleString('ko-KR');
-        els.statOwned.textContent = ownedTotal.toLocaleString('ko-KR');
-        els.subtitle.textContent = `총 ${books.length.toLocaleString('ko-KR')}권 (한글책 ${korTotal.toLocaleString('ko-KR')} · 영어책 ${engTotal.toLocaleString('ko-KR')}) · 보유 ${ownedTotal.toLocaleString('ko-KR')}건`;
+        return {
+          id,
+          typeIdx,
+          bookType: typeIdx === 0 ? '한글책' : '영어책',
+          catIdx,
+          category: catMeta.name,
+          lvlIdx,
+          level,
+          title,
+          author,
+          publisher,
+          review,
+          owned,
+          ownedRank: owned ? (owned === '보유' ? 2 : 1) : 0,
+          baseSh,
+          baseSj,
+          detailUrl,
+          tL: titleLower,
+          aL: authorLower,
+          pL: pubLower,
+          allL: `${titleLower} ${authorLower} ${pubLower}`,
+          tC: typeIdx === 0 ? toChoseong(title) : titleLower,
+          aC: typeIdx === 0 ? toChoseong(author) : authorLower,
+          pC: typeIdx === 0 ? toChoseong(publisher) : pubLower
+        };
+      }
 
-        renderFilterChips(catCounts, engLvlCounts);
-        renderPublisherDatalist(pubCounts);
+      function hydrateBooks(rawList) {
+        const books = new Array(rawList.length);
+        for (let i = 0; i < rawList.length; i++) {
+          books[i] = createBookRecord(rawList[i]);
+        }
+        state.baseBooks = books;
+        rebuildCatalogIndexes(books);
         updateKidsStats();
         applyUrlParamsIfPresent();
         syncTypeUI();
