@@ -1490,14 +1490,14 @@
   <!-- Google Drive Sync Dialog -->
   <dialog id="drive-dialog" aria-labelledby="drive-dialog-title">
     <div class="dialog-header">
-      <h2 id="drive-dialog-title">☁️ Google Drive CSV 실시간 자동 업데이트</h2>
+      <h2 id="drive-dialog-title">☁️ Google 스프레드시트 / Drive 양방향 동기화</h2>
       <button type="button" class="btn-secondary" data-close-dialog="drive-dialog">닫기</button>
     </div>
     <div class="dialog-body">
       <div class="dialog-section">
         <h3>Apps Script 웹 앱 연결 설정</h3>
         <p class="hint" style="margin: 0 0 0.7rem;">
-          연결해 두면 승호·슬지 읽은 횟수를 바꿀 때마다 Google Drive의 <code>잠수네_전체_통합.csv</code>가 자동 업데이트되며, PC·스마트폰 간 실시간 동기화됩니다.
+          연결해 두면 웹에서 승호·슬지 횟수를 바꿀 때 Google 스프레드시트(또는 CSV)가 자동 업데이트되고, Google 스프레드시트에서 <code>승호</code>·<code>슬지</code>·<code>보유여부</code>를 직접 수정해도 웹을 새로고침하면 자동 반영됩니다.
         </p>
         <div class="field" style="margin-block-end: 0.65rem;">
           <label for="gas-url-input">Google Apps Script 웹 앱 URL</label>
@@ -1757,7 +1757,8 @@
           const data = await resp.json();
           if (!data.ok) throw new Error(data.error || '저장 실패');
           const t = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-          setSyncBadge('ok', `✅ Drive CSV 저장 완료 (${t})`);
+          const label = data.sourceKind === 'sheet' ? '스프레드시트' : 'Drive CSV';
+          setSyncBadge('ok', `✅ ${label} 저장 완료 (${t})`);
         } catch (err) {
           // Restore unsent updates so next retry sends them
           pendingDriveUpdates = { ...batch, ...pendingDriveUpdates };
@@ -1770,9 +1771,27 @@
         }
       }
 
+      function applyOwnedMapFromDrive(ownedMap) {
+        let ownedTotal = 0;
+        let korTotal = 0;
+        let engTotal = 0;
+        const books = state.books;
+        for (let i = 0; i < books.length; i++) {
+          const b = books[i];
+          const ow = ownedMap[b.id] || '';
+          b.owned = ow;
+          b.ownedRank = ow ? (ow === '보유' ? 2 : 1) : 0;
+          if (ow) ownedTotal++;
+          if (b.typeIdx === 0) korTotal++;
+          else engTotal++;
+        }
+        els.statOwned.textContent = ownedTotal.toLocaleString('ko-KR');
+        els.subtitle.textContent = `총 ${books.length.toLocaleString('ko-KR')}권 (한글책 ${korTotal.toLocaleString('ko-KR')} · 영어책 ${engTotal.toLocaleString('ko-KR')}) · 보유 ${ownedTotal.toLocaleString('ko-KR')}건`;
+      }
+
       async function pullFromDrive(refreshCsv = false) {
         if (!state.gas.url) return false;
-        setSyncBadge('saving', '⏳ Google Drive에서 독서기록 불러오는 중...');
+        setSyncBadge('saving', '⏳ Google Drive에서 최신 기록 불러오는 중...');
         try {
           const u = new URL(state.gas.url);
           u.searchParams.set('action', 'load');
@@ -1786,11 +1805,15 @@
           if (data.reads && typeof data.reads === 'object') {
             state.reads = data.reads;
             saveReads();
-            updateKidsStats();
-            applyFiltersAndRender(false);
           }
+          if (data.hasOwned && data.owned && typeof data.owned === 'object') {
+            applyOwnedMapFromDrive(data.owned);
+          }
+          updateKidsStats();
+          applyFiltersAndRender(false);
           const t = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
-          setSyncBadge('ok', `✅ Drive 연결됨 · 동기화 완료 (${t})`);
+          const label = data.sourceKind === 'sheet' ? '스프레드시트' : 'Drive';
+          setSyncBadge('ok', `✅ ${label} 동기화 완료 (${t})`);
           return true;
         } catch (err) {
           setSyncBadge('err', `⚠️ Drive 동기화 오류: ${err.message}`);
@@ -2830,7 +2853,8 @@
 
           state.gas = { url, pin };
           saveGasConfig();
-          els.driveDialogStatus.textContent = `✅ 연결 성공! 대상 파일: ${data.fileName}`;
+          const kindTxt = data.sourceTypeLabel ? ` [${data.sourceTypeLabel}]` : '';
+          els.driveDialogStatus.textContent = `✅ 연결 성공!${kindTxt} ${data.fileName}`;
           await pullFromDrive(false);
         } catch (err) {
           els.driveDialogStatus.className = 'status-msg error';
@@ -2881,6 +2905,17 @@
         els.driveDialogStatus.textContent = els.syncBadge.classList.contains('ok')
           ? `✅ ${entries.length}권 기록을 Google Drive CSV에 반영했습니다!`
           : '반영 중 오류가 발생했습니다.';
+      });
+
+      // Also auto-sync silently when returning to this browser tab (e.g. after editing Google Sheets in another tab!)
+      let lastTabSyncAt = Date.now();
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && state.gas.url && !driveSyncInFlight && Object.keys(pendingDriveUpdates).length === 0) {
+          if (Date.now() - lastTabSyncAt > 8000) {
+            lastTabSyncAt = Date.now();
+            pullFromDrive(false);
+          }
+        }
       });
 
       async function boot() {
