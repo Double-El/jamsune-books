@@ -1963,11 +1963,11 @@
       function createBookRecord(item) {
         // Format: [typeIdx, catIdx, lvlIdx, title, author, publisher, review, owned, btPk, fc, branchIdx, baseSh?, baseSj?, explicitUrl?]
         const typeIdx = item[0] ? 1 : 0;
-        const catIdx = item[1] || 0;
-        const lvlIdx = item[2] || 0;
-        const title = item[3] || '';
-        const author = item[4] || '';
-        const publisher = item[5] || '';
+        const catIdx = item[1] == null ? -1 : Number(item[1]);
+        const lvlIdx = item[2] == null ? -1 : Number(item[2]);
+        const title = String(item[3] == null ? '' : item[3]);
+        const author = String(item[4] == null ? '' : item[4]);
+        const publisher = String(item[5] == null ? '' : item[5]);
         const review = Number(item[6]) || 0;
         const owned = item[7] || '';
         const btPk = item[8] || '';
@@ -1977,8 +1977,8 @@
         const baseSj = Number(item[12]) || 0;
         const explicitUrl = item[13] || '';
 
-        const catMeta = CATEGORIES[catIdx] || CATEGORIES[0];
-        const level = LEVELS[lvlIdx] || '';
+        const catMeta = catIdx >= 0 ? CATEGORIES[catIdx] : null;
+        const level = lvlIdx >= 0 ? (LEVELS[lvlIdx] || '') : '';
         const branch = BRANCHES[branchIdx] || 'k';
         let detailUrl = explicitUrl;
         if (!detailUrl && btPk) {
@@ -1999,7 +1999,7 @@
           typeIdx,
           bookType: typeIdx === 0 ? '한글책' : '영어책',
           catIdx,
-          category: catMeta.name,
+          category: catMeta ? catMeta.name : '직접추가',
           lvlIdx,
           level,
           title,
@@ -2142,12 +2142,12 @@
           if (onlyFavs && !favs.has(b.id)) continue;
 
           if (bType === 'kor') {
-            if (b.typeIdx !== 0 || !korCats.has(b.catIdx)) continue;
+            if (b.typeIdx !== 0 || (b.catIdx >= 0 && !korCats.has(b.catIdx))) continue;
           } else if (bType === 'eng') {
-            if (b.typeIdx !== 1 || !engCats.has(b.catIdx) || !engLvls.has(b.lvlIdx)) continue;
+            if (b.typeIdx !== 1 || (b.catIdx >= 0 && !engCats.has(b.catIdx)) || (b.lvlIdx >= 0 && !engLvls.has(b.lvlIdx))) continue;
           } else {
-            if (b.typeIdx === 0 && !korCats.has(b.catIdx)) continue;
-            if (b.typeIdx === 1 && !engCats.has(b.catIdx)) continue;
+            if (b.typeIdx === 0 && b.catIdx >= 0 && !korCats.has(b.catIdx)) continue;
+            if (b.typeIdx === 1 && b.catIdx >= 0 && !engCats.has(b.catIdx)) continue;
           }
 
           if (ownedF !== 'all') {
@@ -2386,10 +2386,14 @@
           tPill.textContent = b.typeIdx === 0 ? '한' : '영';
           const cBadge = document.createElement('span');
           cBadge.className = 'cat-badge';
-          cBadge.append(
-            document.createTextNode(b.category + ' '),
-            Object.assign(document.createElement('span'), { className: 'level-sub', textContent: b.level })
-          );
+          if (b.level) {
+            cBadge.append(
+              document.createTextNode(b.category + ' '),
+              Object.assign(document.createElement('span'), { className: 'level-sub', textContent: b.level })
+            );
+          } else {
+            cBadge.textContent = b.category;
+          }
           tdCat.append(tPill, cBadge);
 
           // Title
